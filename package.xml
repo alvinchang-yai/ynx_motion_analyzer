@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ynx_motion_analyzer</name>
+  <version>0.0.1</version>
+  <description>Record and plot commanded ("ideal") vs. feedback ("real") joint motion streamed by
+    ynx_hardware_interface, and drive stop-vs-non-stop latency test moves via MoveIt.</description>
+  <maintainer email="alvin71134@gmail.com">changal</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <depend>rclpy</depend>
+  <depend>rosbag2_py</depend>
+  <depend>rosidl_runtime_py</depend>
+  <depend>sensor_msgs</depend>
+  <depend>moveit_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>shape_msgs</depend>
+  <depend>tf_transformations</depend>
+
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>python3-matplotlib</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
