@@ -3,9 +3,11 @@
 Records the commanded ("ideal") and feedback ("real") joint trajectories streamed by
 `ynx_hardware_interface` during any arm movement, and plots them per axis so tracking
 behavior can be inspected visually. Also includes `plot_shift_check`, which checks
-whether feedback is well-described as command delayed by a constant amount, and
-`latency_test_example`, a MoveIt client that drives a repeatable stop-vs-non-stop loop
-for exercising this analysis.
+whether feedback is well-described as command delayed by a constant amount;
+`ramp_delay_stats`, which segments a recording into every distinct move and reports
+delay statistics sampled across all of them instead of trusting a single measurement;
+and `latency_test_example`, a MoveIt client that drives a repeatable stop-vs-non-stop
+loop for exercising this analysis.
 
 Requires **real hardware** (`use_mock_hardware:=false`). `mock_components/GenericSystem`
 never runs `ynx_hardware_interface`'s code, so the topics this tool needs simply don't
@@ -248,37 +250,35 @@ ros2 run ynx_motion_analyzer plot_motion experiment/sync_loop_bag --ns nex10 --j
 ros2 run ynx_motion_analyzer plot_motion experiment/async_loop_bag --ns nex10 --jitter
 ros2 run ynx_motion_analyzer plot_shift_check experiment/sync_loop_bag --ns nex10
 ros2 run ynx_motion_analyzer plot_shift_check experiment/async_loop_bag --ns nex10
+ros2 run ynx_motion_analyzer ramp_delay_stats experiment/sync_loop_bag --ns nex10 --axis S
+ros2 run ynx_motion_analyzer ramp_delay_stats experiment/async_loop_bag --ns nex10 --axis S
 ```
 
-**Command -> feedback delay stayed about the same** (axis S, `--threshold-deg 1`):
+**Command -> feedback delay stayed about the same** (axis S). Rather than
+trusting a single threshold-crossing on a single ramp, each bag's *entire*
+recording was segmented into every distinct idle->moving->idle ramp (via a
+velocity threshold on the clean commanded signal - the stop-mode loop produces
+9 ramps per bag: 3 loop iterations x 3 ramps each), then 20 samples were drawn
+at random thresholds (seeded) spread across *all* of them via `ramp_delay_stats`
+(command above; see the command reference below for its flags):
 
 | | sync | async |
 |---|---|---|
-| delay | +142.69 ms | +138.63 ms |
+| ramps detected | 9 | 9 |
+| mean delay (20 samples, all ramps) | 146.99 ms | 146.58 ms |
+| std | 2.97 ms | 2.87 ms |
+| min / max | 139.00 / 151.09 ms | 141.17 / 152.29 ms |
 
-The async rework targeted control-loop *rate*, not this delay - it's dominated
-by trajectory ramp-up and the ACU's own internal + mechanical response, neither
-of which `read()`/`write()` touch. Roughly unchanged is the expected result.
-
-A single threshold is one point on the ramp, though - to check the delay is
-actually stable rather than a coincidence of where 1° happens to land, the same
-measurement was repeated at 20 randomly chosen thresholds (seeded, uniform
-between 0.3 deg and ~95% of the peak deviation reached) along the *same first
-ramp* in each bag - not 20 different movements scattered across the whole
-recording, which the current tooling doesn't do automatically:
-
-| | sync | async |
-|---|---|---|
-| mean delay (20 samples) | 149.65 ms | 146.93 ms |
-| std | 3.95 ms | 3.10 ms |
-| min / max | 142.02 / 156.77 ms | 139.90 / 151.06 ms |
-
-Tight std in both (~3-4ms) confirms the delay holds steady across the ramp
-rather than drifting, and sync vs. async remain close - consistent with
-everything above. This wasn't built as a reusable flag - it's a one-off script
-reusing `find_command_start_time`/`find_signal_threshold_time` with randomized
-thresholds instead of hand-picked ones; ask if you want it turned into a
-proper `plot_motion` mode.
+Per-ramp means all land within a couple ms of the overall mean (no ramp is a
+systematic outlier), std is tight (~3ms) across the *whole* recording, not just
+one ramp, and sync vs. async are effectively the same (146.99 vs 146.58 ms - a
+0.4ms difference, well inside the noise). The async rework targeted control-loop
+*rate*, not this delay - it's dominated by trajectory ramp-up and the ACU's own
+internal + mechanical response, neither of which `read()`/`write()` touch, so
+staying flat here is the expected result. (For reference, a single
+`--threshold-deg 1` measurement on just the first ramp gives +142.69 ms sync /
++138.63 ms async - consistent with the robust average above, though as one
+point it can't tell you on its own whether that's representative.)
 
 **Feedback is still well-described as command delayed by a constant amount**
 (`plot_shift_check`'s RMS error before/after shifting feedback back by the
@@ -419,6 +419,18 @@ Z=0.5-0.7m) doesn't suit your workspace.
 | `--threshold-deg` | `1.0` | Degree threshold the command-start -> feedback delay is measured at. Repeatable - each value gets its own zoomed-transition panel plus an averaged delay across all of them |
 | `--jitter` | off | Also save `<axis>_jitter.png` (signed per-sample velocity, `joint_command_sent` vs `joint_feedback`, whole recording) |
 | `--show` | off | Also open live, interactive windows (requires a display) |
+
+`ramp_delay_stats`:
+| Flag | Default | Meaning |
+|---|---|---|
+| `--ns` | `''` | Same as `plot_motion` |
+| `--hw-node` | `nex10` | Same as `plot_motion` |
+| `--sent-topic` / `--feedback-topic` | built from `--ns`/`--hw-node` | Override the topic names directly |
+| `--axis` | all six | Restrict to specific axes |
+| `--n-samples` | `20` | Total randomized-threshold samples, spread across every detected ramp |
+| `--seed` | `42` | Random seed, for reproducible sampling across runs |
+| `--velocity-threshold-deg-s` | `1.0` | Velocity (on the commanded signal) above which the axis counts as "moving," used to segment ramps |
+| `--min-ramp-peak-deg` | `1.0` | Ignore detected ramps that never move at least this many degrees - filters noise blips, not real moves |
 
 `latency_test_example`:
 | Flag | Default | Meaning |

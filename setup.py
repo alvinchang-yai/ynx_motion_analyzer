@@ -23,6 +23,7 @@ setup(
             'record_motion = motion_trace.record_motion:main',
             'plot_motion = motion_trace.plot_motion:main',
             'plot_shift_check = shift_check.plot_shift_check:main',
+            'ramp_delay_stats = ramp_delay_stats.ramp_delay_stats:main',
             'latency_test_example = latency_test_example:main',
         ],
     },
