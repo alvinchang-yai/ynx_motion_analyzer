@@ -2,12 +2,22 @@
 
 Records the commanded ("ideal") and feedback ("real") joint trajectories streamed by
 `ynx_hardware_interface` during any arm movement, and plots them per axis so tracking
-behavior can be inspected visually. Also includes `latency_test_example`, a MoveIt
-client that drives a repeatable stop-vs-non-stop loop for exercising this analysis.
+behavior can be inspected visually. Also includes `plot_shift_check`, which checks
+whether feedback is well-described as command delayed by a constant amount, and
+`latency_test_example`, a MoveIt client that drives a repeatable stop-vs-non-stop loop
+for exercising this analysis.
 
 Requires **real hardware** (`use_mock_hardware:=false`). `mock_components/GenericSystem`
 never runs `ynx_hardware_interface`'s code, so the topics this tool needs simply don't
 exist under mock hardware.
+
+## Experiment recordings live under `experiment/`
+
+`record_motion` saves every bag under `experiment/` (`ynx_motion_analyzer/experiment/`)
+by default now - a bare `-o name` is placed there automatically; pass an absolute path
+if you deliberately want it somewhere else. All analysis going forward should read from
+recordings under that folder rather than scattered elsewhere, so past runs stay easy to
+find and compare (e.g. `experiment/sync_loop_bag`, `experiment/async_loop_bag`).
 
 ## What gets recorded
 
@@ -73,7 +83,8 @@ of `ns`. If your `ns` differs, verify the real topic names with `ros2 topic list
    ```
    This starts `ros2 bag record` against `joint_command_sent`/`joint_command`/
    `joint_command_acu`/`joint_feedback` and prints the output directory name
-   (default `motion_bag_<timestamp>`, override with `-o`). Leave it running.
+   (default `experiment/motion_bag_<timestamp>`; `-o name` also lands under
+   `experiment/`, pass an absolute path to override). Leave it running.
 
 4. **Trigger the movement**, in a third terminal:
    ```bash
@@ -90,9 +101,9 @@ of `ns`. If your `ns` differs, verify the real topic names with `ros2 topic list
 
 6. **Generate the plots**:
    ```bash
-   ros2 run ynx_motion_analyzer plot_motion motion_bag_20260824_134335 --ns nex10
+   ros2 run ynx_motion_analyzer plot_motion {YOUR_MOTION_BAG_PATH} --ns nex10
    ```
-   This writes into `motion_bag_20260824_134335/plot/`:
+   This writes into `{YOUR_MOTION_BAG_PATH}/plot/`:
    ```
    plot/S.png  plot/L.png  plot/U.png  plot/R.png  plot/B.png  plot/T.png
    ```
@@ -106,17 +117,23 @@ x-axis spans a multi-second move, and even zoomed in, four overlapping
 near-identical step lines are hard to tell apart by eye. So don't try to eyeball
 delays off the lines directly; read the number this tool computes for you instead:
 
-- **Each `<axis>.png`** has two panels, both showing all four checkpoints (sent,
-  ACU ack, ACU internal setpoint, feedback):
-  - **Top** — the full move, seconds, unzoomed, for context.
-  - **Bottom** — the same four lines, auto-zoomed to a millisecond-scale window.
+- **Each `<axis>.png`** has one full-move overview panel plus one zoomed-transition
+  panel per `--threshold-deg` value (repeatable - default is just `1.0`, giving
+  the classic 2-panel layout, but e.g. `--threshold-deg 1 --threshold-deg 5
+  --threshold-deg 10` gives 4 panels and an averaged delay across all three, so
+  you can check whether the delay is consistent at different points along the
+  same move instead of trusting a single measurement). Every panel shows all
+  four checkpoints (sent, ACU ack, ACU internal setpoint, feedback):
+  - **Top** — the full move, seconds, unzoomed, for context. Its title reports
+    the average delay across however many thresholds were measured.
+  - **Each zoomed panel** — the same four lines, auto-zoomed to a
+    millisecond-scale window around that threshold's crossing.
     The delay measurement itself still only compares `sent` and `feedback` (the
     two ends of the pipeline) - the ACU-ack and ACU-internal-setpoint lines are
     there for visual context on where the delay comes from, not folded into the
-    number. It's: **when command reaches `--threshold-deg` (default 1°), what's
-    the latency until feedback also reaches `--threshold-deg`** - both measured
-    from the same shared baseline, found by a sequential scan of the recording
-    from its very start:
+    number. It's: **when command reaches the threshold, what's the latency
+    until feedback also reaches it** - both measured from the same shared
+    baseline, found by a sequential scan of the recording from its very start:
     1. Scan the commanded (`sent`) position forward until it first moves away
        from its initial (idle) value at all - this only establishes a clean
        baseline (both signals' own value at that moment), it isn't one of the
@@ -135,6 +152,39 @@ delays off the lines directly; read the number this tool computes for you instea
     the measured gap labeled right on it (and repeated in a text box) - "same
     position, this many ms apart," not something you infer from comparing two
     curves.
+- **`--jitter`** — also saves `<axis>_jitter.png` per axis: signed per-sample
+  **velocity** (position step ÷ real elapsed `dt`, not raw step size) for
+  `joint_command_sent` and `joint_feedback`, across the *whole* recording
+  rather than a single zoomed transition, with mean/std/max (of the
+  magnitude) annotated for a numeric read instead of just eyeballing the
+  line. Velocity, not raw step, because a raw per-sample step is a function
+  of how often you happened to sample, not how fast the arm moved - it isn't
+  comparable across recordings made at different control-loop rates (e.g.
+  the old ~158Hz synchronous loop vs. the current ~500Hz async loop), while
+  velocity is. Signed rather than absolute, so the trace follows the move's
+  actual wave shape (rises on the outbound leg, dips negative on the way
+  back) instead of folding everything into positive-only magnitude - a
+  jitter spike stands out precisely because it breaks that recognizable
+  shape. Exact-zero steps are dropped before plotting (they're duplicate
+  cache reads - e.g. `joint_feedback`'s 250Hz stream cache re-published by
+  the 500Hz `read()` loop - not genuine stillness). The y-axis is clipped to
+  the 1st-99th percentile of the data so a rare, large, already-understood
+  outlier (e.g. a `joint_trajectory_controller` interpolation artifact at a
+  zero-velocity segment boundary, amplified by dividing by a small `dt`)
+  doesn't stretch the axis and drown out the much smaller "normal" jitter
+  this plot exists to show - the point is still in the data and the stats
+  box, just clipped from the view.
+
+  Uses `joint_command_sent` (the RT loop's own intended setpoint, published
+  every `write()` cycle) rather than `joint_command` (the ACU-ack signal,
+  published only when the background sender's `SetIncrementMove` call
+  happens to complete). The ACU-ack signal's step size is downstream of
+  write-side coalescing and gRPC round-trip variance - it measures how lumpy
+  a given send was, not what was actually commanded - so it's the wrong
+  signal for asking "does feedback track the intended trajectory smoothly."
+  This isn't just visible on a position-vs-time curve at either of
+  `plot_axis`'s timescales - it's invisible there entirely, which is why
+  this mode exists.
 - **`--show`** — opens live, interactive matplotlib windows for every plot, in
   addition to still saving all the PNGs as usual. Use the toolbar's zoom/pan tool
   (rectangle-select) to freely explore any time range down to individual samples.
@@ -142,6 +192,155 @@ delays off the lines directly; read the number this tool computes for you instea
   a working GUI backend/display (a local X server, X11 forwarding, or WSLg on
   Windows) - if nothing shows up, that's almost always a missing display, not a
   bug in the tool.
+
+## Sanity-checking the delay: is feedback just a delayed copy of command?
+
+`plot_shift_check` answers a narrower question than `plot_motion`: is
+`joint_feedback` well-described as `joint_command_sent` delayed by a single
+constant amount, or does it actually diverge in shape (damping, overshoot, a
+delay that varies with speed/direction)? It measures the command->feedback
+delay the same way `plot_motion` does (at `--threshold-deg`), then shifts the
+*entire* feedback trace back in time by that one delay value and overlays it
+against the commanded trajectory across the whole move - not just at the
+single point the delay was measured from. A close match across the whole
+move (ramps, plateaus, direction reversals) means the delay is genuinely
+close to constant; a lingering mismatch after shifting would mean something
+beyond a pure time lag is going on.
+
+```bash
+ros2 run ynx_motion_analyzer plot_shift_check async_loop_bag --ns nex10
+```
+
+Saves `<axis>_shift_check.png` into `<bag_path>/plot/` per axis - top panel
+is the current (unshifted) overlay, bottom panel is feedback shifted back by
+the measured delay - and prints the delay and RMS position error (unshifted
+vs. shifted) for each axis to the console, e.g.:
+
+```
+Axis S: delay=138.80 ms  RMS unshifted=1.188 deg  RMS shifted=0.066 deg  -> Saved async_loop_bag/plot/S_shift_check.png
+```
+
+A large RMS drop after shifting (as above, ~18x) confirms feedback tracks
+the commanded shape faithfully and the measured delay is representative of
+the whole move, not just the threshold-crossing moment.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--ns` | `''` | Same as `plot_motion` |
+| `--hw-node` | `nex10` | Same as `plot_motion` |
+| `--sent-topic` / `--feedback-topic` | built from `--ns`/`--hw-node` | Override the topic names directly |
+| `--axis` | all six | Restrict to specific axes |
+| `--threshold-deg` | `1.0` | Same meaning as in `plot_motion`, but single-value here (not repeatable) |
+| `--show` | off | Also open live, interactive windows (requires a display) |
+
+## Example: sync vs. async results
+
+`experiment/sync_loop_bag` and `experiment/async_loop_bag` are included as a
+concrete before/after reference, both recorded from the same stop-mode loop
+move: `sync_loop_bag` is from the original, fully-synchronous `read()`/`write()`
+(blocking gRPC calls on the RT thread, ~158Hz effective control loop);
+`async_loop_bag` is from the current async-buffered version (background I/O
+threads, ~500Hz). These are example outputs, not a permanent characterization
+of the system - regenerate them yourself if you want current numbers:
+
+```bash
+ros2 run ynx_motion_analyzer plot_motion experiment/sync_loop_bag --ns nex10 --jitter
+ros2 run ynx_motion_analyzer plot_motion experiment/async_loop_bag --ns nex10 --jitter
+ros2 run ynx_motion_analyzer plot_shift_check experiment/sync_loop_bag --ns nex10
+ros2 run ynx_motion_analyzer plot_shift_check experiment/async_loop_bag --ns nex10
+```
+
+**Command -> feedback delay stayed about the same** (axis S, `--threshold-deg 1`):
+
+| | sync | async |
+|---|---|---|
+| delay | +142.69 ms | +138.63 ms |
+
+The async rework targeted control-loop *rate*, not this delay - it's dominated
+by trajectory ramp-up and the ACU's own internal + mechanical response, neither
+of which `read()`/`write()` touch. Roughly unchanged is the expected result.
+
+A single threshold is one point on the ramp, though - to check the delay is
+actually stable rather than a coincidence of where 1° happens to land, the same
+measurement was repeated at 20 randomly chosen thresholds (seeded, uniform
+between 0.3 deg and ~95% of the peak deviation reached) along the *same first
+ramp* in each bag - not 20 different movements scattered across the whole
+recording, which the current tooling doesn't do automatically:
+
+| | sync | async |
+|---|---|---|
+| mean delay (20 samples) | 149.65 ms | 146.93 ms |
+| std | 3.95 ms | 3.10 ms |
+| min / max | 142.02 / 156.77 ms | 139.90 / 151.06 ms |
+
+Tight std in both (~3-4ms) confirms the delay holds steady across the ramp
+rather than drifting, and sync vs. async remain close - consistent with
+everything above. This wasn't built as a reusable flag - it's a one-off script
+reusing `find_command_start_time`/`find_signal_threshold_time` with randomized
+thresholds instead of hand-picked ones; ask if you want it turned into a
+proper `plot_motion` mode.
+
+**Feedback is still well-described as command delayed by a constant amount**
+(`plot_shift_check`'s RMS error before/after shifting feedback back by the
+measured delay):
+
+| | sync | async |
+|---|---|---|
+| RMS unshifted | 1.197 deg | 1.324 deg |
+| RMS shifted | 0.053 deg | 0.081 deg |
+
+Both collapse dramatically once the delay is accounted for, confirming good
+tracking fidelity in both versions. Async's shifted RMS is a bit higher - that's
+the read-side 500Hz-poll/250Hz-stream duplicate-frame effect adding some noise
+(see `--jitter` above), not a tracking regression.
+
+**Jitter (`--jitter`, signed per-sample velocity) tells a story worth reading
+carefully, not just at face value:**
+
+| | sync | async |
+|---|---|---|
+| sent \|vel\| mean / max | 7.81 / 20.81 deg/s | 8.01 / 133.01 deg/s |
+| feedback \|vel\| mean / max | 8.32 / 35.87 deg/s | 10.20 / 1607.96 deg/s |
+
+The *mean* barely moves - the arm genuinely travels at about the same real
+speed either way. The *max* jumps dramatically, which looks alarming until you
+know why: the old ~158Hz loop implicitly averaged out brief single-instant
+events, and velocity (position step / dt) amplifies a fixed-size glitch more
+when dt is smaller. Same underlying reality, viewed at ~3x the sampling
+resolution through a lens (division by a shrinking dt) that inflates fixed-size
+outliers - not evidence the arm got jerkier. See "Reading the plots" above for
+the full explanation.
+
+**Sample plots** (regenerate with the commands above; these are what's
+currently committed under `experiment/*/plot/`):
+
+The 1° delay measurement itself (top: full move; bottom: zoomed transition
+with the delay marked) - sync:
+
+![sync delay plot](experiment/sync_loop_bag/plot/S.png)
+
+async:
+
+![async delay plot](experiment/async_loop_bag/plot/S.png)
+
+Shift-check (top: unshifted overlay; bottom: feedback shifted back by the
+measured delay) - sync:
+
+![sync shift check](experiment/sync_loop_bag/plot/S_shift_check.png)
+
+async:
+
+![async shift check](experiment/async_loop_bag/plot/S_shift_check.png)
+
+Jitter (signed per-sample velocity, `joint_command_sent` vs `joint_feedback`)
+- sync:
+
+![sync jitter](experiment/sync_loop_bag/plot/S_jitter.png)
+
+async:
+
+![async jitter](experiment/async_loop_bag/plot/S_jitter.png)
+| `experiment/sync_loop_bag/plot/S_jitter.png` | `experiment/async_loop_bag/plot/S_jitter.png` |
 
 ## Latency test: stop vs. non-stop
 
@@ -182,9 +381,11 @@ ros2 run ynx_motion_analyzer record_motion --ns nex10 -o nonstop_loop_bag
 ros2 run ynx_motion_analyzer latency_test_example --mode nonstop --speed 0.1 --blend-radius 0.05 --ros-args -p ns:=nex10
 # Ctrl+C terminal A once it finishes
 
-ros2 run ynx_motion_analyzer plot_motion stop_loop_bag --ns nex10
-ros2 run ynx_motion_analyzer plot_motion nonstop_loop_bag --ns nex10
+ros2 run ynx_motion_analyzer plot_motion experiment/stop_loop_bag --ns nex10
+ros2 run ynx_motion_analyzer plot_motion experiment/nonstop_loop_bag --ns nex10
 ```
+
+(`record_motion -o name` places the bag under `experiment/` automatically; `plot_motion`/`plot_shift_check` take the bag path exactly as given, so include `experiment/` when pointing them at it.)
 
 Note `--ros-args -p ns:=nex10` (a ROS *parameter*, consumed by the node to
 build topic/action names) coexists on the same command line as `--mode`/
@@ -205,7 +406,7 @@ Z=0.5-0.7m) doesn't suit your workspace.
 |---|---|---|
 | `--ns` | `''` | Bringup's `ns:=` argument, if any |
 | `--hw-node` | `nex10` | Hardware component's node name (from the xacro) |
-| `-o`, `--output` | `motion_bag_<timestamp>` | Bag output directory |
+| `-o`, `--output` | `experiment/motion_bag_<timestamp>` | Bag output directory or bare name (placed under `experiment/`); pass an absolute path to override |
 | `--extra-topic` | - | Additional topic to record (repeatable) |
 
 `plot_motion`:
@@ -215,7 +416,8 @@ Z=0.5-0.7m) doesn't suit your workspace.
 | `--hw-node` | `nex10` | Same as above |
 | `--sent-topic` / `--command-topic` / `--acu-topic` / `--feedback-topic` | built from `--ns`/`--hw-node` | Override the topic names directly |
 | `--axis` | all six | Restrict to specific axes, e.g. `--axis S --axis T` |
-| `--threshold-deg` | `1.0` | Fixed degree threshold the command-start -> feedback delay is measured from |
+| `--threshold-deg` | `1.0` | Degree threshold the command-start -> feedback delay is measured at. Repeatable - each value gets its own zoomed-transition panel plus an averaged delay across all of them |
+| `--jitter` | off | Also save `<axis>_jitter.png` (signed per-sample velocity, `joint_command_sent` vs `joint_feedback`, whole recording) |
 | `--show` | off | Also open live, interactive windows (requires a display) |
 
 `latency_test_example`:
@@ -226,12 +428,3 @@ Z=0.5-0.7m) doesn't suit your workspace.
 | `--blend-radius` | `0.05` | Blend radius in meters for the non-stop loop's intermediate legs |
 | `--pause-between-modes` | `3.0` | Seconds to pause between the two runs when `--mode both` is used |
 | `--ros-args -p ns:=<ns>` | (none) | ROS parameter, not an argparse flag - the bringup namespace |
-
-## Troubleshooting
-
-- **No messages / empty bag**: almost always `use_mock_hardware:=true`, or a `--ns`
-  mismatch between recording and plotting. Confirm with `ros2 topic list` while
-  bringup is running.
-- **`plot_motion` errors "No messages found on ..."**: it prints every topic that
-  actually exists in the bag — compare that list against what `--ns`/`--hw-node`
-  produced, and pass `--command-topic`/`--feedback-topic` directly if needed.

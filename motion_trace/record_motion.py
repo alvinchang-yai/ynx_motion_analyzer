@@ -1,7 +1,14 @@
 import argparse
+import os
 import subprocess
 import sys
 from datetime import datetime
+
+# All experiment recordings live here by default, not wherever the tool
+# happens to be run from - a fixed, known location (not derived from
+# __file__) since `ros2 run` always executes the installed copy, not the
+# source tree, so relative-to-this-file paths would resolve under install/.
+EXPERIMENT_DIR = os.path.expanduser('~/ros2_ws/src/ynx_motion_analyzer/experiment')
 
 
 def main():
@@ -18,13 +25,16 @@ def main():
              'nex10.ros2_control_macro.xacro regardless of --ns. Change only if that xacro changes.')
     parser.add_argument(
         '-o', '--output', default=None,
-        help='Bag output directory (default: motion_bag_<timestamp>)')
+        help=f'Bag output directory or name (default: motion_bag_<timestamp>). A bare name (not an '
+             f'absolute path) is placed under {EXPERIMENT_DIR} - pass an absolute path to override.')
     parser.add_argument(
         '--extra-topic', action='append', default=[],
         help='Additional topic to record (repeatable).')
     args = parser.parse_args()
 
-    output = args.output or f"motion_bag_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    output_name = args.output or f"motion_bag_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    output = output_name if os.path.isabs(output_name) else os.path.join(EXPERIMENT_DIR, output_name)
+    os.makedirs(EXPERIMENT_DIR, exist_ok=True)
 
     # The hardware component's node (hardcoded name from the xacro) sits under
     # whatever outer namespace bringup was launched with, e.g. --ns nex10 gives

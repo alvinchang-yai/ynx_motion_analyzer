@@ -6,6 +6,7 @@ setup(
     name=package_name,
     version='0.0.1',
     packages=find_packages(exclude=['test']),
+    py_modules=['latency_test_example'],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -19,9 +20,10 @@ setup(
     license='BSD-3-Clause',
     entry_points={
         'console_scripts': [
-            'record_motion = ynx_motion_analyzer.record_motion:main',
-            'plot_motion = ynx_motion_analyzer.plot_motion:main',
-            'latency_test_example = ynx_motion_analyzer.latency_test_example:main',
+            'record_motion = motion_trace.record_motion:main',
+            'plot_motion = motion_trace.plot_motion:main',
+            'plot_shift_check = shift_check.plot_shift_check:main',
+            'latency_test_example = latency_test_example:main',
         ],
     },
 )

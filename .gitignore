@@ -1,0 +1,10 @@
+# Ignore everything under experiment/ except the two bags being pushed.
+# Note: this must be "experiment/*" (each child matched individually), not
+# "experiment/" (the whole dir matched as one unit) - git doesn't look inside
+# a directory that's excluded as a unit, so the negations below wouldn't take
+# effect against a bare "experiment/" pattern.
+experiment/*
+!experiment/sync_loop_bag/
+!experiment/async_loop_bag/
+__pycache__/
+*.pyc
