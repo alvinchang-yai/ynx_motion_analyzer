@@ -81,7 +81,7 @@ of `ns`. If your `ns` differs, verify the real topic names with `ros2 topic list
 3. **Start recording**, in a new terminal:
    ```bash
    source install/setup.bash
-   ros2 run ynx_motion_analyzer record_motion --ns nex10
+   ros2 run ynx_motion_analyzer record_motion
    ```
    This starts `ros2 bag record` against `joint_command_sent`/`joint_command`/
    `joint_command_acu`/`joint_feedback` and prints the output directory name
@@ -103,7 +103,7 @@ of `ns`. If your `ns` differs, verify the real topic names with `ros2 topic list
 
 6. **Generate the plots**:
    ```bash
-   ros2 run ynx_motion_analyzer plot_motion {YOUR_MOTION_BAG_PATH} --ns nex10
+   ros2 run ynx_motion_analyzer plot_motion {YOUR_MOTION_BAG_PATH}
    ```
    This writes into `{YOUR_MOTION_BAG_PATH}/plot/`:
    ```
@@ -210,7 +210,7 @@ close to constant; a lingering mismatch after shifting would mean something
 beyond a pure time lag is going on.
 
 ```bash
-ros2 run ynx_motion_analyzer plot_shift_check async_loop_bag --ns nex10
+ros2 run ynx_motion_analyzer plot_shift_check async_loop_bag
 ```
 
 Saves `<axis>_shift_check.png` into `<bag_path>/plot/` per axis - top panel
@@ -228,9 +228,8 @@ the whole move, not just the threshold-crossing moment.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--ns` | `''` | Same as `plot_motion` |
+| `--ns` | `nex10` | Same as `plot_motion` |
 | `--hw-node` | `nex10` | Same as `plot_motion` |
-| `--sent-topic` / `--feedback-topic` | built from `--ns`/`--hw-node` | Override the topic names directly |
 | `--axis` | all six | Restrict to specific axes |
 | `--threshold-deg` | `1.0` | Same meaning as in `plot_motion`, but single-value here (not repeatable) |
 | `--show` | off | Also open live, interactive windows (requires a display) |
@@ -246,12 +245,12 @@ threads, ~500Hz). These are example outputs, not a permanent characterization
 of the system - regenerate them yourself if you want current numbers:
 
 ```bash
-ros2 run ynx_motion_analyzer plot_motion experiment/sync_loop_bag --ns nex10 --jitter
-ros2 run ynx_motion_analyzer plot_motion experiment/async_loop_bag --ns nex10 --jitter
-ros2 run ynx_motion_analyzer plot_shift_check experiment/sync_loop_bag --ns nex10
-ros2 run ynx_motion_analyzer plot_shift_check experiment/async_loop_bag --ns nex10
-ros2 run ynx_motion_analyzer ramp_delay_stats experiment/sync_loop_bag --ns nex10 --axis S
-ros2 run ynx_motion_analyzer ramp_delay_stats experiment/async_loop_bag --ns nex10 --axis S
+ros2 run ynx_motion_analyzer plot_motion experiment/sync_loop_bag --jitter
+ros2 run ynx_motion_analyzer plot_motion experiment/async_loop_bag --jitter
+ros2 run ynx_motion_analyzer plot_shift_check experiment/sync_loop_bag
+ros2 run ynx_motion_analyzer plot_shift_check experiment/async_loop_bag
+ros2 run ynx_motion_analyzer ramp_delay_stats experiment/sync_loop_bag --axis S
+ros2 run ynx_motion_analyzer ramp_delay_stats experiment/async_loop_bag --axis S
 ```
 
 **Command -> feedback delay stayed about the same** (axis S). Rather than
@@ -370,19 +369,19 @@ second move):
 
 ```bash
 # terminal A
-ros2 run ynx_motion_analyzer record_motion --ns nex10 -o stop_loop_bag
+ros2 run ynx_motion_analyzer record_motion -o stop_loop_bag
 # terminal B, once recording says "Listening for topics..."
 ros2 run ynx_motion_analyzer latency_test_example --mode stop --speed 0.1 --ros-args -p ns:=nex10
 # Ctrl+C terminal A once it finishes
 
 # terminal A
-ros2 run ynx_motion_analyzer record_motion --ns nex10 -o nonstop_loop_bag
+ros2 run ynx_motion_analyzer record_motion -o nonstop_loop_bag
 # terminal B
 ros2 run ynx_motion_analyzer latency_test_example --mode nonstop --speed 0.1 --blend-radius 0.05 --ros-args -p ns:=nex10
 # Ctrl+C terminal A once it finishes
 
-ros2 run ynx_motion_analyzer plot_motion experiment/stop_loop_bag --ns nex10
-ros2 run ynx_motion_analyzer plot_motion experiment/nonstop_loop_bag --ns nex10
+ros2 run ynx_motion_analyzer plot_motion experiment/stop_loop_bag
+ros2 run ynx_motion_analyzer plot_motion experiment/nonstop_loop_bag
 ```
 
 (`record_motion -o name` places the bag under `experiment/` automatically; `plot_motion`/`plot_shift_check` take the bag path exactly as given, so include `experiment/` when pointing them at it.)
@@ -404,7 +403,7 @@ Z=0.5-0.7m) doesn't suit your workspace.
 `record_motion`:
 | Flag | Default | Meaning |
 |---|---|---|
-| `--ns` | `''` | Bringup's `ns:=` argument, if any |
+| `--ns` | `nex10` | Bringup's `ns:=` argument (pass `''` if recorded with no namespace) |
 | `--hw-node` | `nex10` | Hardware component's node name (from the xacro) |
 | `-o`, `--output` | `experiment/motion_bag_<timestamp>` | Bag output directory or bare name (placed under `experiment/`); pass an absolute path to override |
 | `--extra-topic` | - | Additional topic to record (repeatable) |
@@ -412,9 +411,8 @@ Z=0.5-0.7m) doesn't suit your workspace.
 `plot_motion`:
 | Flag | Default | Meaning |
 |---|---|---|
-| `--ns` | `''` | Same as above; used to build default topic names |
+| `--ns` | `nex10` | Same as above; used to build the topic names |
 | `--hw-node` | `nex10` | Same as above |
-| `--sent-topic` / `--command-topic` / `--acu-topic` / `--feedback-topic` | built from `--ns`/`--hw-node` | Override the topic names directly |
 | `--axis` | all six | Restrict to specific axes, e.g. `--axis S --axis T` |
 | `--threshold-deg` | `1.0` | Degree threshold the command-start -> feedback delay is measured at. Repeatable - each value gets its own zoomed-transition panel plus an averaged delay across all of them |
 | `--jitter` | off | Also save `<axis>_jitter.png` (signed per-sample velocity, `joint_command_sent` vs `joint_feedback`, whole recording) |
@@ -423,9 +421,8 @@ Z=0.5-0.7m) doesn't suit your workspace.
 `ramp_delay_stats`:
 | Flag | Default | Meaning |
 |---|---|---|
-| `--ns` | `''` | Same as `plot_motion` |
+| `--ns` | `nex10` | Same as `plot_motion` |
 | `--hw-node` | `nex10` | Same as `plot_motion` |
-| `--sent-topic` / `--feedback-topic` | built from `--ns`/`--hw-node` | Override the topic names directly |
 | `--axis` | all six | Restrict to specific axes |
 | `--n-samples` | `20` | Total randomized-threshold samples, spread across every detected ramp |
 | `--seed` | `42` | Random seed, for reproducible sampling across runs |

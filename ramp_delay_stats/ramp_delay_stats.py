@@ -111,18 +111,12 @@ def main():
                     'both overall and per ramp.')
     parser.add_argument('bag_path', help='Path to the rosbag2 directory (the -o used with record_motion)')
     parser.add_argument(
-        '--ns', default='',
-        help="The bringup launch's 'ns' argument used when the bag was recorded, if any (e.g. 'nex10'). "
-             'Ignored if the --*-topic flags are given explicitly.')
+        '--ns', default='nex10',
+        help="The bringup launch's 'ns' argument used when the bag was recorded (default: 'nex10'). "
+             "Pass '' if the bag was recorded with no namespace.")
     parser.add_argument(
         '--hw-node', default='nex10',
         help="The hardware component's own node name (hardcoded 'nex10' in the xacro, independent of --ns).")
-    parser.add_argument(
-        '--sent-topic', default=None,
-        help='Full topic name override. Default: built from --ns/--hw-node, e.g. /<ns>/<hw-node>/joint_command_sent.')
-    parser.add_argument(
-        '--feedback-topic', default=None,
-        help='Full topic name override. Default: built from --ns/--hw-node, e.g. /<ns>/<hw-node>/joint_feedback.')
     parser.add_argument(
         '--axis', action='append', choices=AXIS_NAMES,
         help='Axis to check (repeatable, e.g. --axis S --axis T). Default: all six axes.')
@@ -145,8 +139,8 @@ def main():
 
     ns_prefix = f'/{args.ns}' if args.ns else ''
     base = f'{ns_prefix}/{args.hw_node}'
-    sent_topic = args.sent_topic or f'{base}/joint_command_sent'
-    feedback_topic = args.feedback_topic or f'{base}/joint_feedback'
+    sent_topic = f'{base}/joint_command_sent'
+    feedback_topic = f'{base}/joint_feedback'
 
     print(f'Reading bag: {args.bag_path}')
     data = read_bag(args.bag_path)
@@ -160,7 +154,7 @@ def main():
             f"No messages found on '{sent_topic}' or '{feedback_topic}'.\n"
             f'Topics present in this bag: {available}\n'
             "Check the hardware component's node name/namespace with `ros2 topic list` "
-            'and pass --ns/--hw-node or the --*-topic flags if they differ.')
+            'and pass --ns/--hw-node if they differ.')
 
     axes = args.axis or AXIS_NAMES
     for axis_label in axes:
