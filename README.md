@@ -1,17 +1,82 @@
 # ynx_motion_analyzer
 
-Records the commanded ("ideal") and feedback ("real") joint trajectories streamed by
-`ynx_hardware_interface` during any arm movement, and plots them per axis so tracking
-behavior can be inspected visually. Also includes `plot_shift_check`, which checks
-whether feedback is well-described as command delayed by a constant amount;
-`ramp_delay_stats`, which segments a recording into every distinct move and reports
-delay statistics sampled across all of them instead of trusting a single measurement;
-and `latency_test_example`, a MoveIt client that drives a repeatable stop-vs-non-stop
-loop for exercising this analysis.
+Records the commanded ("ideal") and feedback ("real") joint trajectories of any arm
+movement, and plots them per axis so tracking behavior can be inspected visually. Also
+includes `plot_shift_check`, which checks whether feedback is well-described as command
+delayed by a constant amount; `ramp_delay_stats`, which segments a recording into every
+distinct move and reports delay statistics sampled across all of them instead of trusting
+a single measurement; and `latency_test_example`, a MoveIt client that drives a repeatable
+stop-vs-non-stop loop for exercising this analysis.
 
-Requires **real hardware** (`use_mock_hardware:=false`). `mock_components/GenericSystem`
-never runs `ynx_hardware_interface`'s code, so the topics this tool needs simply don't
-exist under mock hardware.
+The tools aren't tied to one hardware interface: which topics to record, which message
+field holds the positions, and what to call each axis all come from a **hardware profile**
+(`--profile`, see below). The default `ynx` profile covers `ynx_hardware_interface`'s
+four-checkpoint topics, and most of this README walks through that case. The `ros2_control`
+profile works with any ros2_control hardware.
+
+## Hardware profiles
+
+A profile is a small YAML file in `profiles/` (installed to
+`share/ynx_motion_analyzer/profiles/`). Every tool (`record_motion`, `plot_motion`,
+`plot_shift_check`, `ramp_delay_stats`) takes the same flags:
+
+| Flag | Meaning |
+|---|---|
+| `--profile NAME\|PATH` | Built-in profile name, or a path to your own YAML (default: `ynx`) |
+| `--ns` | Fills the profile's `{ns}` placeholder. Pass `''` for no namespace |
+| `--hw-node` | Fills `{hw_node}`, for profiles that use one |
+| `--set KEY=VALUE` | Fills any other placeholder the profile defines (repeatable) |
+
+Built-in profiles:
+
+- **`ynx`** - `ynx_hardware_interface`'s `joint_command_sent` / `joint_command` /
+  `joint_command_acu` / `joint_feedback`, axes named S/L/U/R/B/T. Defaults
+  `ns=nex10`, `hw_node=nex10`. **Requires real hardware** (`use_mock_hardware:=false`):
+  `mock_components/GenericSystem` never runs `ynx_hardware_interface`'s code, so these
+  topics don't exist under mock hardware.
+- **`ros2_control`** - `joint_trajectory_controller`'s standard `controller_state` topic
+  (`reference.positions` vs `feedback.positions`). This works with any hardware
+  interface, mock included, because it relies only on the controller. The measured delay
+  is the lag from the controller's reference to the state-interface feedback. Both
+  signals share one timestamp per control cycle. Defaults `ns=''`,
+  `controller=joint_trajectory_controller`. Use e.g. `--set controller=scaled_joint_trajectory_controller`
+  for UR-style drivers.
+
+```bash
+ros2 run ynx_motion_analyzer record_motion --profile ros2_control --ns nex10 -o jtc_bag
+ros2 run ynx_motion_analyzer plot_motion experiment/jtc_bag --profile ros2_control --ns nex10
+```
+
+**Adding new hardware** takes a YAML file and no code changes. Pass its path to
+`--profile`, or drop it into `profiles/` and rebuild to use it by name.
+`profiles/ynx.yaml` is the annotated reference:
+
+```yaml
+name: my_arm
+description: what these topics are
+params:                  # placeholder defaults; --ns / --hw-node / --set override them
+  ns: ''
+  hw_node: my_arm
+axis_names: [A1, A2, A3] # optional, in joint order; omit to label axes by joint name
+command: cmd             # the two signals every delay/jitter/shift measurement compares
+feedback: fb
+signals:                 # plotted in this order; any number of intermediate checkpoints
+  - {key: cmd, topic: '/{ns}/{hw_node}/command', field: position, label: commanded, color: tab:blue}
+  - {key: fb,  topic: '/{ns}/joint_states',      field: position, label: feedback, color: tab:green, linestyle: '--'}
+```
+
+- `field` is a dotted path into the message (`position` for `sensor_msgs/JointState`,
+  `reference.positions` for a controller state, and so on). Any message type works if it
+  carries an array of positions and a `name` or `joint_names` list.
+- Several signals can share one topic.
+- Joints are matched **by name** across topics, so topics that order joints differently
+  still line up. They're matched by index only when a message carries no names.
+- The axis count comes from the recording, so 7-DOF arms and 2-axis stages need no
+  special handling.
+- Timestamps come from `header.stamp`. The bag's receive time is used only when a message
+  has no stamp.
+- Positions are treated as radians and shown in degrees, so for now the analysis assumes
+  revolute joints.
 
 ## Experiment recordings live under `experiment/`
 
@@ -21,7 +86,7 @@ if you deliberately want it somewhere else. All analysis going forward should re
 recordings under that folder rather than scattered elsewhere, so past runs stay easy to
 find and compare (e.g. `experiment/sync_loop_bag`, `experiment/async_loop_bag`).
 
-## What gets recorded
+## What gets recorded (`ynx` profile)
 
 `ynx_hardware_interface` publishes four topics every control cycle, for the whole
 duration of any movement (not just a specific action call) — four checkpoints of
@@ -110,7 +175,8 @@ of `ns`. If your `ns` differs, verify the real topic names with `ros2 topic list
    plot/S.png  plot/L.png  plot/U.png  plot/R.png  plot/B.png  plot/T.png
    ```
    Axis names follow the standard Yaskawa MOTOMAN 6-axis convention, in joint
-   order (`joint_1`..`joint_6` → S, L, U, R, B, T).
+   order (`joint_1`..`joint_6` → S, L, U, R, B, T), set by the `ynx` profile's
+   `axis_names`. Profiles without `axis_names` name the PNGs after the joints.
 
 ## Reading the plots
 
@@ -228,9 +294,8 @@ the whole move, not just the threshold-crossing moment.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--ns` | `nex10` | Same as `plot_motion` |
-| `--hw-node` | `nex10` | Same as `plot_motion` |
-| `--axis` | all six | Restrict to specific axes |
+| `--profile`/`--ns`/`--hw-node`/`--set` | `ynx` profile | See [Hardware profiles](#hardware-profiles) |
+| `--axis` | every joint | Restrict to specific axes (axis name or joint name) |
 | `--threshold-deg` | `1.0` | Same meaning as in `plot_motion`, but single-value here (not repeatable) |
 | `--show` | off | Also open live, interactive windows (requires a display) |
 
@@ -403,17 +468,15 @@ Z=0.5-0.7m) doesn't suit your workspace.
 `record_motion`:
 | Flag | Default | Meaning |
 |---|---|---|
-| `--ns` | `nex10` | Bringup's `ns:=` argument (pass `''` if recorded with no namespace) |
-| `--hw-node` | `nex10` | Hardware component's node name (from the xacro) |
+| `--profile`/`--ns`/`--hw-node`/`--set` | `ynx` profile (`ns=nex10`, `hw_node=nex10`) | Which topics to record - see [Hardware profiles](#hardware-profiles). Pass `--ns ''` if bringup ran with no namespace |
 | `-o`, `--output` | `experiment/motion_bag_<timestamp>` | Bag output directory or bare name (placed under `experiment/`); pass an absolute path to override |
 | `--extra-topic` | - | Additional topic to record (repeatable) |
 
 `plot_motion`:
 | Flag | Default | Meaning |
 |---|---|---|
-| `--ns` | `nex10` | Same as above; used to build the topic names |
-| `--hw-node` | `nex10` | Same as above |
-| `--axis` | all six | Restrict to specific axes, e.g. `--axis S --axis T` |
+| `--profile`/`--ns`/`--hw-node`/`--set` | `ynx` profile | Same as above; must match the profile the bag was recorded with |
+| `--axis` | every joint | Restrict to specific axes by axis or joint name, e.g. `--axis S --axis T` |
 | `--threshold-deg` | `1.0` | Degree threshold the command-start -> feedback delay is measured at. Repeatable - each value gets its own zoomed-transition panel plus an averaged delay across all of them |
 | `--jitter` | off | Also save `<axis>_jitter.png` (signed per-sample velocity, `joint_command_sent` vs `joint_feedback`, whole recording) |
 | `--show` | off | Also open live, interactive windows (requires a display) |
@@ -421,9 +484,8 @@ Z=0.5-0.7m) doesn't suit your workspace.
 `ramp_delay_stats`:
 | Flag | Default | Meaning |
 |---|---|---|
-| `--ns` | `nex10` | Same as `plot_motion` |
-| `--hw-node` | `nex10` | Same as `plot_motion` |
-| `--axis` | all six | Restrict to specific axes |
+| `--profile`/`--ns`/`--hw-node`/`--set` | `ynx` profile | Same as `plot_motion` |
+| `--axis` | every joint | Restrict to specific axes (axis name or joint name) |
 | `--n-samples` | `20` | Total randomized-threshold samples, spread across every detected ramp |
 | `--seed` | `42` | Random seed, for reproducible sampling across runs |
 | `--velocity-threshold-deg-s` | `1.0` | Velocity (on the commanded signal) above which the axis counts as "moving," used to segment ramps |

@@ -1,0 +1,29 @@
+# Any ros2_control hardware driven by joint_trajectory_controller - works with
+# mock_components/GenericSystem too, since it only relies on the controller's
+# standard state topic, not on anything the hardware interface publishes.
+# Both signals come from the same message, so they share one timestamp per
+# control cycle: the delay measured here is the controller's reference ->
+# state-interface feedback lag.
+name: ros2_control
+description: joint_trajectory_controller's controller_state (reference vs. feedback)
+
+params:
+  ns: ''
+  controller: joint_trajectory_controller
+
+command: reference
+feedback: feedback
+
+signals:
+  - key: reference
+    topic: /{ns}/{controller}/controller_state
+    field: reference.positions
+    label: reference (JTC)
+    color: tab:blue
+    linestyle: '-'
+  - key: feedback
+    topic: /{ns}/{controller}/controller_state
+    field: feedback.positions
+    label: feedback (state interface)
+    color: tab:green
+    linestyle: '--'

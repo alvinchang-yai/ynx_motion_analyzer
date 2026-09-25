@@ -3,54 +3,10 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-import rosbag2_py
-from rclpy.serialization import deserialize_message
-from rosidl_runtime_py.utilities import get_message
 
-# Standard Yaskawa MOTOMAN 6-axis naming, in the order the joints are defined
-# in nex10.ros2_control_macro.xacro (joint_1..joint_6).
-AXIS_NAMES = ['S', 'L', 'U', 'R', 'B', 'T']
-
-# Fixed colors, shared by every plot function so a given signal is always the
-# same color regardless of which panel/plot it appears in.
-SENT_COLOR = 'tab:blue'
-ACK_COLOR = 'tab:orange'
-ACU_SETPOINT_COLOR = 'tab:purple'
-FEEDBACK_COLOR = 'tab:green'
-
-
-def read_bag(bag_path):
-    storage_options = rosbag2_py.StorageOptions(uri=bag_path)
-    converter_options = rosbag2_py.ConverterOptions('', '')
-    reader = rosbag2_py.SequentialReader()
-    reader.open(storage_options, converter_options)
-
-    type_map = {t.name: t.type for t in reader.get_all_topics_and_types()}
-
-    data = {}
-    while reader.has_next():
-        topic, raw, _t_ns = reader.read_next()
-        if topic not in type_map:
-            continue
-        msg_type = get_message(type_map[topic])
-        msg = deserialize_message(raw, msg_type)
-        # header.stamp (not bag arrival time) - it reflects the moment the
-        # underlying value was actually captured/sent, not when the message
-        # happened to be published/delivered, which matters once a topic's
-        # value can come from a background cache (joint_feedback/joint_command_acu).
-        stamp_s = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
-        data.setdefault(topic, []).append((stamp_s, msg))
-    return data
-
-
-def extract_series_by_index(samples, index):
-    times, positions = [], []
-    for t, msg in samples:
-        if index >= len(msg.position):
-            continue
-        times.append(t)
-        positions.append(msg.position[index])
-    return np.array(times), np.array(positions)
+from motion_trace.hardware_profile import (
+    add_profile_args, extract_series, profile_from_args, read_bag, require_topics, resolve_axes, select_axes,
+)
 
 
 def _interpolated_crossing(t0, t1, p0, p1, target):
@@ -96,22 +52,24 @@ def find_signal_threshold_time(t, p, after_time, baseline, threshold_deg=1.0):
     return None
 
 
-def plot_axis(sent_samples, command_samples, acu_samples, feedback_samples, index, axis_label, save_dir,
-              threshold_degs=(1.0,), show=False):
-    sent_t, sent_p = extract_series_by_index(sent_samples, index)
-    cmd_t, cmd_p = extract_series_by_index(command_samples, index)
-    acu_t, acu_p = extract_series_by_index(acu_samples, index)
-    fb_t, fb_p = extract_series_by_index(feedback_samples, index)
-
-    if len(sent_t) == 0 and len(cmd_t) == 0 and len(acu_t) == 0 and len(fb_t) == 0:
+def plot_axis(profile, data, axis, save_dir, threshold_degs=(1.0,), show=False):
+    axis_label = axis.label
+    # Every signal the profile defines, in pipeline order - the delay itself
+    # only ever compares the profile's command and feedback signals, the rest
+    # are there for visual context on where the delay comes from.
+    series = [(sig, *extract_series(data, sig, axis)) for sig in profile.signals]
+    if all(len(t) == 0 for _, t, _ in series):
         print(f"  Skipping axis '{axis_label}': no samples found on any topic.")
         return
 
-    t0 = min(list(sent_t[:1]) + list(cmd_t[:1]) + list(acu_t[:1]) + list(fb_t[:1]))
-    sent_t = sent_t - t0
-    cmd_t = cmd_t - t0
-    acu_t = acu_t - t0
-    fb_t = fb_t - t0
+    t0 = min(t[0] for _, t, _ in series if len(t))
+    series = [(sig, t - t0, p) for sig, t, p in series]
+    by_key = {sig.key: (t, p) for sig, t, p in series}
+    sent_t, sent_p = by_key[profile.command]
+    fb_t, fb_p = by_key[profile.feedback]
+    if len(sent_t) == 0 or len(fb_t) == 0:
+        print(f"  Axis '{axis_label}': no samples on '{profile.command}' or '{profile.feedback}' - "
+              'plotting without a delay measurement.')
 
     # One full-move panel plus one zoomed-transition panel per threshold -
     # e.g. 3 thresholds = 4 panels total, so each threshold's crossing gets
@@ -121,21 +79,14 @@ def plot_axis(sent_samples, command_samples, acu_samples, feedback_samples, inde
     ax_pos = axes[0]
     ax_zooms = axes[1:]
 
-    def plot_four_phases(ax):
-        # The four checkpoints of the pipeline, in the order they happen:
-        # ros2_control sends the setpoint -> the ACU acknowledges the gRPC call
-        # -> the ACU's own internal interpolator/setpoint (GetAxesPos) tracks
-        # toward it -> the arm's encoder (GetFeedbackAxesPos) shows it physically.
-        ax.plot(sent_t, np.degrees(sent_p), label='commanded (sent)', linewidth=1.5, color=SENT_COLOR)
-        ax.plot(cmd_t, np.degrees(cmd_p), label='commanded (ACU ack)', linewidth=1.5, linestyle=':', color=ACK_COLOR)
-        ax.plot(acu_t, np.degrees(acu_p), label='ACU internal setpoint', linewidth=1.5, linestyle='-.',
-                color=ACU_SETPOINT_COLOR)
-        ax.plot(fb_t, np.degrees(fb_p), label='feedback (real)', linewidth=1.5, linestyle='--', color=FEEDBACK_COLOR)
+    def plot_signals(ax):
+        for sig, t, p in series:
+            ax.plot(t, np.degrees(p), label=sig.label, linewidth=1.5, linestyle=sig.linestyle, color=sig.color)
         ax.set_ylabel('Position [deg]')
         ax.legend(loc='best')
         ax.grid(True)
 
-    plot_four_phases(ax_pos)
+    plot_signals(ax_pos)
     ax_pos.set_xlabel('Time [s]')
 
     # Scan from the start of the recording to find when the command actually
@@ -146,13 +97,13 @@ def plot_axis(sent_samples, command_samples, acu_samples, feedback_samples, inde
     # each threshold and, separately, when `feedback` reaches the same
     # threshold - the delay between those two "reached N deg" moments is the
     # number each zoomed panel exists to show.
-    command_start_s = find_command_start_time(sent_t, sent_p)
+    command_start_s = find_command_start_time(sent_t, sent_p) if len(fb_t) else None
     sent_baseline = np.interp(command_start_s, sent_t, sent_p) if command_start_s is not None else None
     fb_baseline = np.interp(command_start_s, fb_t, fb_p) if command_start_s is not None else None
 
     delays_ms = []
     for threshold_deg, ax_zoom in zip(threshold_degs, ax_zooms):
-        plot_four_phases(ax_zoom)
+        plot_signals(ax_zoom)
 
         sent_threshold_s = None
         feedback_threshold_s = None
@@ -178,7 +129,7 @@ def plot_axis(sent_samples, command_samples, acu_samples, feedback_samples, inde
 
             # Mark the two "reached threshold_deg" events with a color-matched
             # vertical line each.
-            for cross_t, color in ((sent_threshold_s, SENT_COLOR), (feedback_threshold_s, FEEDBACK_COLOR)):
+            for cross_t, color in ((sent_threshold_s, profile.command_signal.color), (feedback_threshold_s, profile.feedback_signal.color)):
                 if cross_t is not None and window_s[0] <= cross_t <= window_s[1]:
                     ax_zoom.axvline(cross_t, color=color, linestyle='-', linewidth=1, alpha=0.6)
 
@@ -233,25 +184,28 @@ def _stats_text(label, values):
             f'std={np.std(values):.2f}  max={np.max(values):.2f}')
 
 
-def plot_jitter(sent_samples, feedback_samples, index, axis_label, save_dir, show=False):
+def plot_jitter(profile, data, axis, save_dir, show=False):
     # Jitter isn't visible on a position-vs-time curve at the timescale
     # plot_axis operates at (a multi-second move, or a millisecond zoom
     # confined to a single transition). It shows up as irregularity in the
     # *size* of each per-sample step - so plot that directly, signed and
     # across the whole recording, instead of position itself.
     #
-    # Uses joint_command_sent (the RT loop's own intended setpoint, published
-    # every write() cycle) rather than joint_command (the ACU-ack signal,
-    # published only when the background sender thread's SetIncrementMove call
-    # happens to complete). The ACU-ack signal's step size is downstream of
-    # write-side coalescing/RTT variance - it measures how lumpy our sends
-    # were, not what was actually intended - so it's the wrong signal for
-    # asking "does feedback track the commanded trajectory smoothly."
-    sent_t, sent_p = extract_series_by_index(sent_samples, index)
-    fb_t, fb_p = extract_series_by_index(feedback_samples, index)
+    # Uses the profile's command signal - for ynx that's joint_command_sent
+    # (the RT loop's own intended setpoint, published every write() cycle)
+    # rather than joint_command (the ACU-ack signal, published only when the
+    # background sender thread's SetIncrementMove call happens to complete).
+    # The ACU-ack signal's step size is downstream of write-side
+    # coalescing/RTT variance - it measures how lumpy our sends were, not
+    # what was actually intended - so it's the wrong signal for asking "does
+    # feedback track the commanded trajectory smoothly."
+    axis_label = axis.label
+    cmd_sig, fb_sig = profile.command_signal, profile.feedback_signal
+    sent_t, sent_p = extract_series(data, cmd_sig, axis)
+    fb_t, fb_p = extract_series(data, fb_sig, axis)
 
     if len(sent_t) < 2 and len(fb_t) < 2:
-        print(f"  Skipping axis '{axis_label}' jitter: not enough samples on joint_command_sent or joint_feedback.")
+        print(f"  Skipping axis '{axis_label}' jitter: not enough samples on {cmd_sig.label} or {fb_sig.label}.")
         return
 
     t0 = min(list(sent_t[:1]) + list(fb_t[:1]))
@@ -281,7 +235,7 @@ def plot_jitter(sent_samples, feedback_samples, index, axis_label, save_dir, sho
     fb_t_step = fb_t[1:]
 
     # An exact-zero step isn't "no motion" - it's often a duplicate frame:
-    # joint_feedback's cache only refreshes at the stream's ~250Hz sample rate
+    # e.g. ynx's joint_feedback cache only refreshes at the stream's ~250Hz sample rate
     # while read() re-publishes it every ~2ms/500Hz, so roughly every other
     # feedback sample just re-reports the previous cycle's value. Drop those
     # so the plot shows only points where the position actually changed.
@@ -295,10 +249,10 @@ def plot_jitter(sent_samples, feedback_samples, index, axis_label, save_dir, sho
     fig, ax_step = plt.subplots(1, 1, figsize=(16, 6))
 
     if len(sent_vel_deg_s):
-        ax_step.plot(sent_t_step, sent_vel_deg_s, '.-', color=SENT_COLOR, label='joint_command_sent',
+        ax_step.plot(sent_t_step, sent_vel_deg_s, '.-', color=cmd_sig.color, label=cmd_sig.label,
                      markersize=3, linewidth=0.8)
     if len(fb_vel_deg_s):
-        ax_step.plot(fb_t_step, fb_vel_deg_s, '.-', color=FEEDBACK_COLOR, label='joint_feedback',
+        ax_step.plot(fb_t_step, fb_vel_deg_s, '.-', color=fb_sig.color, label=fb_sig.label,
                      markersize=3, linewidth=0.8)
     ax_step.axhline(0, color='black', linewidth=0.6, alpha=0.4)
     ax_step.set_ylabel('Velocity [deg/s] (signed)')
@@ -336,23 +290,17 @@ def plot_jitter(sent_samples, feedback_samples, index, axis_label, save_dir, sho
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Plot all four checkpoints - commanded-sent, commanded-ACU-ack, the ACU's own "
-                    "internal setpoint, and feedback ('real') - of joint trajectories from a bag "
-                    "recorded from ynx_hardware_interface's ~/joint_command_sent, ~/joint_command, "
-                    '~/joint_command_acu, and ~/joint_feedback topics. Each axis\'s PNG has a full-move '
-                    'overview on top and a millisecond-scale zoomed transition on the bottom. '
-                    "Saves one PNG per axis (S/L/U/R/B/T) into '<bag_path>/plot/'.")
+        description="Plot every checkpoint a hardware profile defines (for the default 'ynx' profile: "
+                    "commanded-sent, commanded-ACU-ack, the ACU's own internal setpoint, and feedback) "
+                    'per axis from a recorded bag, and measure the command -> feedback delay. Each axis\'s '
+                    'PNG has a full-move overview on top and a millisecond-scale zoomed transition per '
+                    "threshold below. Saves one PNG per axis into '<bag_path>/plot/'.")
     parser.add_argument('bag_path', help='Path to the rosbag2 directory (the -o used with record_motion)')
+    add_profile_args(parser)
     parser.add_argument(
-        '--ns', default='nex10',
-        help="The bringup launch's 'ns' argument used when the bag was recorded (default: 'nex10'). "
-             "Pass '' if the bag was recorded with no namespace.")
-    parser.add_argument(
-        '--hw-node', default='nex10',
-        help="The hardware component's own node name (hardcoded 'nex10' in the xacro, independent of --ns).")
-    parser.add_argument(
-        '--axis', action='append', choices=AXIS_NAMES,
-        help='Axis to plot (repeatable, e.g. --axis S --axis T). Default: all six axes.')
+        '--axis', action='append',
+        help="Axis to plot, by the profile's axis name or by joint name (repeatable, e.g. --axis S "
+             '--axis T). Default: every joint in the recording.')
     parser.add_argument(
         '--threshold-deg', type=float, action='append',
         help='The command-start -> feedback delay is measured from when the commanded position '
@@ -364,9 +312,9 @@ def main():
     parser.add_argument(
         '--jitter', action='store_true',
         help='Also save <axis>_jitter.png per axis: signed per-sample velocity (derived from '
-             'de-duplicated position + real elapsed dt) for joint_command_sent vs joint_feedback, to check '
-             'whether feedback tracks the intended trajectory smoothly - detail a position-vs-time plot is '
-             'too coarse to show.')
+             "de-duplicated position + real elapsed dt) for the profile's command vs feedback signals, to "
+             'check whether feedback tracks the intended trajectory smoothly - detail a position-vs-time '
+             'plot is too coarse to show.')
     parser.add_argument(
         '--show', action='store_true',
         help='Also open live, interactive matplotlib windows for every plot (in addition to still '
@@ -374,42 +322,23 @@ def main():
              'individual samples - e.g. millisecond-scale detail on the latency gaps. Requires a '
              'working GUI backend/display (X11 forwarding, WSLg, etc.). Closes when you close the windows.')
     args = parser.parse_args()
+    profile = profile_from_args(args)
 
-    ns_prefix = f'/{args.ns}' if args.ns else ''
-    base = f'{ns_prefix}/{args.hw_node}'
-    sent_topic = f'{base}/joint_command_sent'
-    command_topic = f'{base}/joint_command'
-    acu_topic = f'{base}/joint_command_acu'
-    feedback_topic = f'{base}/joint_feedback'
-
-    print(f'Reading bag: {args.bag_path}')
+    print(f"Reading bag: {args.bag_path} (profile '{profile.name}')")
     data = read_bag(args.bag_path)
+    if not any(data.get(t) for t in profile.topics()):
+        require_topics(profile, data, [profile.command, profile.feedback])
 
-    sent_samples = data.get(sent_topic, [])
-    command_samples = data.get(command_topic, [])
-    acu_samples = data.get(acu_topic, [])
-    feedback_samples = data.get(feedback_topic, [])
-
-    if not sent_samples and not command_samples and not acu_samples and not feedback_samples:
-        available = ', '.join(sorted(data.keys())) or '(none)'
-        raise SystemExit(
-            f"No messages found on '{sent_topic}', '{command_topic}', '{acu_topic}', or '{feedback_topic}'.\n"
-            f'Topics present in this bag: {available}\n'
-            "Check the hardware component's node name/namespace with `ros2 topic list` "
-            'and pass --ns/--hw-node if they differ.')
-
-    axes = args.axis or AXIS_NAMES
+    axes = select_axes(resolve_axes(profile, data), args.axis)
     threshold_degs = args.threshold_deg or [1.0]
 
     save_dir = os.path.join(args.bag_path, 'plot')
     os.makedirs(save_dir, exist_ok=True)
 
-    for axis_label in axes:
-        index = AXIS_NAMES.index(axis_label)
-        plot_axis(sent_samples, command_samples, acu_samples, feedback_samples, index, axis_label, save_dir,
-                  threshold_degs=threshold_degs, show=args.show)
+    for axis in axes:
+        plot_axis(profile, data, axis, save_dir, threshold_degs=threshold_degs, show=args.show)
         if args.jitter:
-            plot_jitter(sent_samples, feedback_samples, index, axis_label, save_dir, show=args.show)
+            plot_jitter(profile, data, axis, save_dir, show=args.show)
 
     if args.show:
         print('Opening interactive window(s) - close them (or Ctrl+C) to exit.')

@@ -1,0 +1,46 @@
+# ynx_hardware_interface: four checkpoints of the same command pipeline,
+# published every control cycle by the hardware component's own node.
+# Requires real hardware - mock_components/GenericSystem never runs this code.
+name: ynx
+description: ynx_hardware_interface's per-cycle sent / ACU-ack / ACU-setpoint / encoder topics
+
+# Placeholder defaults for the topic templates below; override with
+# --ns / --hw-node / --set KEY=VALUE. An empty value collapses out of the path.
+params:
+  ns: nex10       # bringup's ns:= argument
+  hw_node: nex10  # hardware component's node name, hardcoded in nex10.ros2_control_macro.xacro
+
+# Optional display names, in joint order (Yaskawa MOTOMAN 6-axis convention).
+# Omit to label axes by joint name.
+axis_names: [S, L, U, R, B, T]
+
+# Delay/jitter/shift-check always compare these two signals.
+command: sent
+feedback: feedback
+
+# Plotted in this order - the order the pipeline happens in.
+signals:
+  - key: sent
+    topic: /{ns}/{hw_node}/joint_command_sent
+    field: position
+    label: commanded (sent)
+    color: tab:blue
+    linestyle: '-'
+  - key: ack
+    topic: /{ns}/{hw_node}/joint_command
+    field: position
+    label: commanded (ACU ack)
+    color: tab:orange
+    linestyle: ':'
+  - key: acu
+    topic: /{ns}/{hw_node}/joint_command_acu
+    field: position
+    label: ACU internal setpoint
+    color: tab:purple
+    linestyle: '-.'
+  - key: feedback
+    topic: /{ns}/{hw_node}/joint_feedback
+    field: position
+    label: feedback (real)
+    color: tab:green
+    linestyle: '--'

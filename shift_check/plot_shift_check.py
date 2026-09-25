@@ -4,14 +4,13 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from motion_trace.plot_motion import (
-    AXIS_NAMES, SENT_COLOR, FEEDBACK_COLOR, read_bag, extract_series_by_index,
-    find_command_start_time, find_signal_threshold_time,
+from motion_trace.hardware_profile import (
+    add_profile_args, extract_series, profile_from_args, read_bag, require_topics, resolve_axes, select_axes,
 )
+from motion_trace.plot_motion import find_command_start_time, find_signal_threshold_time
 
 
-def plot_shift_check(sent_samples, feedback_samples, index, axis_label, save_dir,
-                      threshold_deg=1.0, show=False):
+def plot_shift_check(profile, data, axis, save_dir, threshold_deg=1.0, show=False):
     # Sanity check for "is feedback just a delayed copy of the commanded
     # trajectory, or does it actually diverge in shape": measure the
     # command->feedback delay the same way plot_motion does (at the
@@ -22,11 +21,13 @@ def plot_shift_check(sent_samples, feedback_samples, index, axis_label, save_dir
     # constant and feedback tracks command shape faithfully; a mismatch would
     # mean something beyond a pure time lag is going on (damping, overshoot,
     # a delay that varies with speed/direction, etc).
-    sent_t, sent_p = extract_series_by_index(sent_samples, index)
-    fb_t, fb_p = extract_series_by_index(feedback_samples, index)
+    axis_label = axis.label
+    cmd_sig, fb_sig = profile.command_signal, profile.feedback_signal
+    sent_t, sent_p = extract_series(data, cmd_sig, axis)
+    fb_t, fb_p = extract_series(data, fb_sig, axis)
 
     if len(sent_t) == 0 or len(fb_t) == 0:
-        print(f"  Skipping axis '{axis_label}': no samples on joint_command_sent or joint_feedback.")
+        print(f"  Skipping axis '{axis_label}': no samples on {cmd_sig.label} or {fb_sig.label}.")
         return
 
     t0 = min(sent_t[0], fb_t[0])
@@ -61,17 +62,17 @@ def plot_shift_check(sent_samples, feedback_samples, index, axis_label, save_dir
 
     fig, (ax_raw, ax_shifted) = plt.subplots(2, 1, figsize=(14, 9), sharex=True)
 
-    ax_raw.plot(sent_t, np.degrees(sent_p), label='commanded (sent)', color=SENT_COLOR, linewidth=1.3)
-    ax_raw.plot(fb_t, np.degrees(fb_p), label='feedback (real), unshifted', color=FEEDBACK_COLOR,
+    ax_raw.plot(sent_t, np.degrees(sent_p), label=cmd_sig.label, color=cmd_sig.color, linewidth=1.3)
+    ax_raw.plot(fb_t, np.degrees(fb_p), label=f'{fb_sig.label}, unshifted', color=fb_sig.color,
                 linewidth=1.3, linestyle='--')
     ax_raw.set_ylabel('Position [deg]')
     ax_raw.set_title(f'Axis {axis_label}: current latency (unshifted) - RMS error {rms_raw:.3f} deg')
     ax_raw.legend(loc='best')
     ax_raw.grid(True, alpha=0.3)
 
-    ax_shifted.plot(sent_t, np.degrees(sent_p), label='commanded (sent)', color=SENT_COLOR, linewidth=1.3)
-    ax_shifted.plot(fb_t_shifted, np.degrees(fb_p), label=f'feedback (real), shifted back {delay_s * 1000:.1f} ms',
-                    color=FEEDBACK_COLOR, linewidth=1.3, linestyle='--')
+    ax_shifted.plot(sent_t, np.degrees(sent_p), label=cmd_sig.label, color=cmd_sig.color, linewidth=1.3)
+    ax_shifted.plot(fb_t_shifted, np.degrees(fb_p), label=f'{fb_sig.label}, shifted back {delay_s * 1000:.1f} ms',
+                    color=fb_sig.color, linewidth=1.3, linestyle='--')
     ax_shifted.set_ylabel('Position [deg]')
     ax_shifted.set_xlabel('Time [s]')
     ax_shifted.set_title(f'Axis {axis_label}: feedback shifted back by the measured '
@@ -90,22 +91,17 @@ def plot_shift_check(sent_samples, feedback_samples, index, axis_label, save_dir
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Sanity-check whether joint_feedback is essentially a time-delayed copy of '
-                    "joint_command_sent: measures the command->feedback delay the same way plot_motion "
+        description="Sanity-check whether the profile's feedback signal (ynx: joint_feedback) is "
+                    "essentially a time-delayed copy of its command signal (ynx: joint_command_sent): measures the command->feedback delay the same way plot_motion "
                     'does, then shifts feedback back by that delay and overlays it against the commanded '
                     'trajectory across the whole move. Top panel: current (unshifted) latency. Bottom '
                     'panel: feedback shifted back by the measured delay, plus an RMS-error read for both.')
     parser.add_argument('bag_path', help='Path to the rosbag2 directory (the -o used with record_motion)')
+    add_profile_args(parser)
     parser.add_argument(
-        '--ns', default='nex10',
-        help="The bringup launch's 'ns' argument used when the bag was recorded (default: 'nex10'). "
-             "Pass '' if the bag was recorded with no namespace.")
-    parser.add_argument(
-        '--hw-node', default='nex10',
-        help="The hardware component's own node name (hardcoded 'nex10' in the xacro, independent of --ns).")
-    parser.add_argument(
-        '--axis', action='append', choices=AXIS_NAMES,
-        help='Axis to check (repeatable, e.g. --axis S --axis T). Default: all six axes.')
+        '--axis', action='append',
+        help="Axis to check, by the profile's axis name or by joint name (repeatable, e.g. --axis S "
+             '--axis T). Default: every joint in the recording.')
     parser.add_argument(
         '--threshold-deg', type=float, default=1.0,
         help='Degree threshold the command->feedback delay is measured at, same meaning as in '
@@ -116,34 +112,19 @@ def main():
              'GUI backend/display.')
     args = parser.parse_args()
 
-    ns_prefix = f'/{args.ns}' if args.ns else ''
-    base = f'{ns_prefix}/{args.hw_node}'
-    sent_topic = f'{base}/joint_command_sent'
-    feedback_topic = f'{base}/joint_feedback'
+    profile = profile_from_args(args)
 
-    print(f'Reading bag: {args.bag_path}')
+    print(f"Reading bag: {args.bag_path} (profile '{profile.name}')")
     data = read_bag(args.bag_path)
+    require_topics(profile, data, [profile.command, profile.feedback])
 
-    sent_samples = data.get(sent_topic, [])
-    feedback_samples = data.get(feedback_topic, [])
-
-    if not sent_samples or not feedback_samples:
-        available = ', '.join(sorted(data.keys())) or '(none)'
-        raise SystemExit(
-            f"No messages found on '{sent_topic}' or '{feedback_topic}'.\n"
-            f'Topics present in this bag: {available}\n'
-            "Check the hardware component's node name/namespace with `ros2 topic list` "
-            'and pass --ns/--hw-node if they differ.')
-
-    axes = args.axis or AXIS_NAMES
+    axes = select_axes(resolve_axes(profile, data), args.axis)
 
     save_dir = os.path.join(args.bag_path, 'plot')
     os.makedirs(save_dir, exist_ok=True)
 
-    for axis_label in axes:
-        index = AXIS_NAMES.index(axis_label)
-        plot_shift_check(sent_samples, feedback_samples, index, axis_label, save_dir,
-                          threshold_deg=args.threshold_deg, show=args.show)
+    for axis in axes:
+        plot_shift_check(profile, data, axis, save_dir, threshold_deg=args.threshold_deg, show=args.show)
 
     if args.show:
         print('Opening interactive window(s) - close them (or Ctrl+C) to exit.')

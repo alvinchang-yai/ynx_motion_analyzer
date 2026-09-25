@@ -2,12 +2,15 @@ import argparse
 
 import numpy as np
 
-from motion_trace.plot_motion import AXIS_NAMES, read_bag, extract_series_by_index, find_signal_threshold_time
+from motion_trace.hardware_profile import (
+    add_profile_args, extract_series, profile_from_args, read_bag, require_topics, resolve_axes, select_axes,
+)
+from motion_trace.plot_motion import find_signal_threshold_time
 
 
 def segment_ramps(sent_t, sent_p, velocity_threshold_deg_s=1.0, min_ramp_peak_deg=1.0):
     # Find every idle->moving->idle interval in the commanded signal via a
-    # velocity threshold. Only run against joint_command_sent, not feedback -
+    # velocity threshold. Only run against the command signal, not feedback -
     # the commanded signal is clean/noise-free, so a simple threshold cleanly
     # separates idle from ramp; feedback has real jitter that would make this
     # unreliable. Returns a list of dicts: start_s, end_s, baseline (sent_p at
@@ -73,12 +76,13 @@ def sample_delays(sent_t, sent_p, fb_t, fb_p, ramps, n_samples=20, seed=42):
     return np.array(all_delays), per_ramp_delays
 
 
-def report_axis(sent_samples, feedback_samples, index, axis_label, n_samples, seed,
-                 velocity_threshold_deg_s, min_ramp_peak_deg):
-    sent_t, sent_p = extract_series_by_index(sent_samples, index)
-    fb_t, fb_p = extract_series_by_index(feedback_samples, index)
+def report_axis(profile, data, axis, n_samples, seed, velocity_threshold_deg_s, min_ramp_peak_deg):
+    axis_label = axis.label
+    sent_t, sent_p = extract_series(data, profile.command_signal, axis)
+    fb_t, fb_p = extract_series(data, profile.feedback_signal, axis)
     if len(sent_t) < 2 or len(fb_t) < 2:
-        print(f'Axis {axis_label}: not enough samples on joint_command_sent or joint_feedback - skipped.')
+        print(f'Axis {axis_label}: not enough samples on {profile.command_signal.label} or '
+              f'{profile.feedback_signal.label} - skipped.')
         return
     t0 = min(sent_t[0], fb_t[0])
     sent_t, fb_t = sent_t - t0, fb_t - t0
@@ -110,16 +114,11 @@ def main():
                     'randomized-threshold samples spread across all of them and reports mean/std/min/max, '
                     'both overall and per ramp.')
     parser.add_argument('bag_path', help='Path to the rosbag2 directory (the -o used with record_motion)')
+    add_profile_args(parser)
     parser.add_argument(
-        '--ns', default='nex10',
-        help="The bringup launch's 'ns' argument used when the bag was recorded (default: 'nex10'). "
-             "Pass '' if the bag was recorded with no namespace.")
-    parser.add_argument(
-        '--hw-node', default='nex10',
-        help="The hardware component's own node name (hardcoded 'nex10' in the xacro, independent of --ns).")
-    parser.add_argument(
-        '--axis', action='append', choices=AXIS_NAMES,
-        help='Axis to check (repeatable, e.g. --axis S --axis T). Default: all six axes.')
+        '--axis', action='append',
+        help="Axis to check, by the profile's axis name or by joint name (repeatable, e.g. --axis S "
+             '--axis T). Default: every joint in the recording.')
     parser.add_argument(
         '--n-samples', type=int, default=20,
         help='Total number of randomized-threshold samples to draw, spread across all detected ramps '
@@ -137,29 +136,14 @@ def main():
              'filters out noise blips rather than real moves (default: 1.0 deg).')
     args = parser.parse_args()
 
-    ns_prefix = f'/{args.ns}' if args.ns else ''
-    base = f'{ns_prefix}/{args.hw_node}'
-    sent_topic = f'{base}/joint_command_sent'
-    feedback_topic = f'{base}/joint_feedback'
+    profile = profile_from_args(args)
 
-    print(f'Reading bag: {args.bag_path}')
+    print(f"Reading bag: {args.bag_path} (profile '{profile.name}')")
     data = read_bag(args.bag_path)
+    require_topics(profile, data, [profile.command, profile.feedback])
 
-    sent_samples = data.get(sent_topic, [])
-    feedback_samples = data.get(feedback_topic, [])
-
-    if not sent_samples or not feedback_samples:
-        available = ', '.join(sorted(data.keys())) or '(none)'
-        raise SystemExit(
-            f"No messages found on '{sent_topic}' or '{feedback_topic}'.\n"
-            f'Topics present in this bag: {available}\n'
-            "Check the hardware component's node name/namespace with `ros2 topic list` "
-            'and pass --ns/--hw-node if they differ.')
-
-    axes = args.axis or AXIS_NAMES
-    for axis_label in axes:
-        index = AXIS_NAMES.index(axis_label)
-        report_axis(sent_samples, feedback_samples, index, axis_label, args.n_samples, args.seed,
+    for axis in select_axes(resolve_axes(profile, data), args.axis):
+        report_axis(profile, data, axis, args.n_samples, args.seed,
                     args.velocity_threshold_deg_s, args.min_ramp_peak_deg)
 
 

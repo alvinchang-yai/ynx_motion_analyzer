@@ -1,3 +1,5 @@
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = 'ynx_motion_analyzer'
@@ -11,12 +13,13 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/profiles', glob('profiles/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='changal',
     maintainer_email='alvin71134@gmail.com',
-    description='Record and plot commanded vs. feedback joint motion from ynx_hardware_interface.',
+    description='Record and plot commanded vs. feedback joint motion, for any hardware via profiles.',
     license='BSD-3-Clause',
     entry_points={
         'console_scripts': [
