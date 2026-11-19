@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Motion Analyzer</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/plotly-basic-2.35.2.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Motion analyzer</h1>
+      <p class="subtle" id="bag-meta">Command → feedback delay from recorded moves</p>
+    </div>
+    <button type="button" class="ghost" id="theme-toggle" aria-label="Toggle light or dark theme">Theme: auto</button>
+  </header>
+
+  <div class="filters">
+    <label>Recording
+      <select id="bag-select" aria-label="Recording"></select>
+    </label>
+  </div>
+
+  <main id="content" aria-live="polite">
+    <section class="card" id="error-card" hidden>
+      <p class="status critical"><span aria-hidden="true">✕</span> <span id="error-text"></span></p>
+    </section>
+
+    <section class="card summary" id="summary-card" hidden>
+      <div class="heroes">
+        <div class="hero">
+          <p class="label">Start delay</p>
+          <p class="hero-value" id="hero-start">–</p>
+          <p class="subtle">Command vs. feedback leaving rest</p>
+        </div>
+        <div class="hero">
+          <p class="label">Motion delay</p>
+          <p class="hero-value" id="hero-motion">–</p>
+          <p class="subtle">Command vs. feedback during the move</p>
+        </div>
+      </div>
+      <p class="subtle" id="hero-note"></p>
+      <div class="table-wrap">
+        <table id="summary-table">
+          <caption class="visually-hidden">Delay per axis</caption>
+          <thead>
+            <tr>
+              <th scope="col">Axis</th>
+              <th scope="col" class="num">Moves</th>
+              <th scope="col" class="num">Start delay</th>
+              <th scope="col" class="num">Motion delay</th>
+              <th scope="col" class="num">Motion delay per move</th>
+              <th scope="col" class="num">RMS error raw → shifted</th>
+              <th scope="col">Notes</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" id="axis-card" hidden>
+      <div class="axis-head">
+        <h2 id="axis-title">Axis</h2>
+        <div class="segmented" id="axis-tabs" role="tablist" aria-label="Axis"></div>
+      </div>
+
+      <div class="chart-head">
+        <h3>Position</h3>
+        <label class="toggle"><input type="checkbox" id="shift-toggle"> <span id="shift-label">Shift feedback back by the typical motion delay</span></label>
+      </div>
+      <p class="subtle" id="position-note"></p>
+      <div class="chart" id="chart-position" role="img" aria-label="Position over time"></div>
+
+      <div class="chart-head"><h3>Delay per move</h3></div>
+      <p class="subtle">Start: when command and feedback each leave rest (0.05°). Motion: mean of 10 delays sampled through the move, with their min–max range. The line is the axis' typical motion delay.</p>
+      <div class="chart short" id="chart-moves" role="img" aria-label="Delay per move"></div>
+
+      <details class="table-view">
+        <summary>Table view: moves</summary>
+        <div class="table-wrap">
+          <table id="moves-table">
+            <thead>
+              <tr>
+                <th scope="col" class="num">Move</th>
+                <th scope="col" class="num">Start (s)</th>
+                <th scope="col" class="num">End (s)</th>
+                <th scope="col" class="num">Travel (deg)</th>
+                <th scope="col" class="num">Start (ms)</th>
+                <th scope="col" class="num">Samples</th>
+                <th scope="col" class="num">Motion mean (ms)</th>
+                <th scope="col" class="num">Min (ms)</th>
+                <th scope="col" class="num">Max (ms)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

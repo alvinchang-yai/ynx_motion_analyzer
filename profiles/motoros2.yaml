@@ -1,0 +1,67 @@
+# MotoROS2 on the YNS 1.7.0 controller, driven by MoveIt. This file is also the
+# annotated reference for writing a profile.
+#
+# Topics:
+#   /display_planned_path   moveit_msgs/DisplayTrajectory, published by move_group for every
+#                           plan: the trajectory MoveIt then sends to the controller, with
+#                           relative times only (header stamp 0) - including plan-only requests.
+#   /follow_joint_trajectory/_action/status
+#                           action_msgs/GoalStatusArray: each goal's acceptance stamp, on the
+#                           controller's clock. Anchors each executed plan in time.
+#   /follow_joint_trajectory/_action/feedback
+#                           control_msgs FollowJointTrajectory feedback while a goal executes
+#                           (~50 Hz). Used only as a fallback anchor: `actual` is identical to
+#                           /joint_states at the same stamps (checked 2026-11-19) at half the
+#                           rate, and `desired` should be the commanded position but on YNS 1.7.0
+#                           it is in DEGREES and is the last point loaded into the controller's
+#                           motion queue (~25-30 points ahead of execution; the final goal all
+#                           move when the trajectory is shorter than that), not the setpoint.
+#   /joint_states           sensor_msgs/JointState, continuously (~100 Hz), encoder position,
+#                           stamped on the controller's clock - the feedback signal.
+#   /robot_status           industrial_msgs/RobotStatus (in_motion, e_stopped, ...)
+#
+# The command -> feedback delay is therefore "MoveIt's plan, started at the moment the
+# controller accepted the goal" -> encoder. It includes the controller's start-up and
+# servo lag, not the PC -> controller network time (that would need clock sync).
+#
+# The _action topics are hidden; record_motion passes --include-hidden-topics for you.
+# Moves that don't come from MoveIt have no plan and are skipped by the analysis.
+name: motoros2
+description: MoveIt planned trajectory (anchored at goal acceptance) vs. MotoROS2 joint_states
+
+# Placeholder defaults for the topic templates below; override with --set KEY=VALUE.
+# The YNX controller publishes everything at the root (no node namespace).
+params:
+  action: follow_joint_trajectory  # FJT action server name
+
+# Optional display names, in joint order (Yaskawa MOTOMAN 6-axis convention).
+# Used only when the recording has exactly this many joints; otherwise axes
+# are labelled by joint name (YNS 1.7.0: joint_0 .. joint_5).
+axis_names: [S, L, U, R, B, T]
+
+# Every delay and shift measurement compares these two signals.
+command: planned
+feedback: joint_states
+
+# Shown on the dashboard in this order. `field` is a dotted path into the message; for array
+# signals the joint-name list (`name`/`joint_names`) and `header` are found next
+# to it automatically (set `names_field` / `stamp_field` to override).
+# A `type: trajectory` signal is rebuilt from planned trajectories instead: see
+# motion_trace/trajectory_signal.py.
+signals:
+  - key: planned
+    type: trajectory
+    topic: /display_planned_path
+    field: trajectory
+    anchor_topic: /{action}/_action/status             # goal acceptance stamp
+    anchor_feedback_topic: /{action}/_action/feedback  # fallback: first feedback of the goal
+    sample_rate_hz: 250
+    label: commanded (MoveIt plan)
+  - key: joint_states
+    topic: /joint_states
+    field: position
+    label: feedback (joint_states)
+
+# Recorded for context, not analyzed.
+extra_topics:
+  - /robot_status

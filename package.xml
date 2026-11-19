@@ -3,9 +3,9 @@
 <package format="3">
   <name>ynx_motion_analyzer</name>
   <version>0.0.1</version>
-  <description>Record and plot commanded ("ideal") vs. feedback ("real") joint motion from any
-    hardware, described by a YAML hardware profile (ynx_hardware_interface and generic ros2_control
-    built in), and drive stop-vs-non-stop latency test moves via MoveIt.</description>
+  <description>Record commanded vs. feedback joint motion from any hardware described by a YAML
+    hardware profile (MotoROS2 and generic ros2_control built in), analyze the delay in a local web
+    dashboard, and drive repeatable latency test moves via MoveIt.</description>
   <maintainer email="alvin71134@gmail.com">changal</maintainer>
   <license>BSD-3-Clause</license>
 
@@ -17,10 +17,12 @@
   <depend>moveit_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>shape_msgs</depend>
-  <depend>tf_transformations</depend>
 
+  <!-- Message types of the built-in profiles' topics, needed to record and read them back. -->
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>industrial_msgs</exec_depend>
   <exec_depend>ros2bag</exec_depend>
-  <exec_depend>python3-matplotlib</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
 
